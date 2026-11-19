@@ -44,7 +44,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          VERSION=$(sed -nE "s/^[[:space:]]*versionName[[:space:]]+['\"]([^'\"]+)['\"].*/\\1/p" app/build.gradle | head -n 1)
+          VERSION=$(awk '/versionName/ { gsub(/[^0-9A-Za-z._-]/, "", $2); print $2; exit }' app/build.gradle)
           test -n "$VERSION"
           TAG="v$VERSION"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then TAG="$GITHUB_REF_NAME"; fi
