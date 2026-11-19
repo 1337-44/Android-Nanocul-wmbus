@@ -15,6 +15,26 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+    // Stable upgrade signing: configure a private keystore in GitHub Actions
+    // secrets. Without it, CI publishes DEBUG APKs signed by ephemeral keys.
+    // Never commit a keystore or password to the public repository.
+    def stableKey = System.getenv('ANDROID_SIGNING_KEYSTORE')
+    if(stableKey && file(stableKey).exists()) {
+        signingConfigs {
+            stableRelease {
+                storeFile file(stableKey)
+                storePassword System.getenv('ANDROID_SIGNING_STORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_SIGNING_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_SIGNING_KEY_PASSWORD')
+            }
+        }
+        buildTypes {
+            release {
+                minifyEnabled false
+                signingConfig signingConfigs.stableRelease
+            }
+        }
+    }
 }
 dependencies {
     implementation 'com.github.mik3y:usb-serial-for-android:3.11.0'
