@@ -8,8 +8,8 @@ android {
         applicationId 'pl.wmbuster.nanocullogger'
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 2
+        versionName '0.2.0'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -18,5 +18,6 @@ android {
 }
 dependencies {
     implementation 'com.github.mik3y:usb-serial-for-android:3.11.0'
+    implementation 'org.osmdroid:osmdroid-android:6.1.20'
     testImplementation 'junit:junit:4.13.2'
 }
