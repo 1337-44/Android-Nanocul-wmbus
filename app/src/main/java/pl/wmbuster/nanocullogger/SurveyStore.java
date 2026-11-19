@@ -17,15 +17,26 @@ import java.util.List;
 public final class SurveyStore {
     private final File file;
     private final JSONObject survey;
+    private static JSONObject read(File file) {
+        if(file.length()<=0 || file.length()>3_000_000) return new JSONObject();
+        try(FileInputStream in=new FileInputStream(file)) {
+            byte[] bytes=new byte[(int)file.length()];
+            int offset=0,n;
+            while(offset<bytes.length &&
+                  (n=in.read(bytes,offset,bytes.length-offset))>0) offset+=n;
+            if(offset==bytes.length)
+                return new JSONObject(new String(bytes,StandardCharsets.UTF_8));
+        } catch(Exception ignored) {}
+        return new JSONObject();
+    }
+    /** Loads the latest completed atomic snapshot, including changes made by
+     * the foreground receiver running in the same application process. */
+    public static JSONObject readSnapshot(Context context) {
+        return read(new File(context.getFilesDir(),"radio-survey.json"));
+    }
     public SurveyStore(Context context) {
         file=new File(context.getFilesDir(),"radio-survey.json");
-        JSONObject loaded=null;
-        try(FileInputStream in=new FileInputStream(file)) {
-            byte[] bytes=new byte[(int)Math.min(file.length(),3_000_000)];
-            int n=in.read(bytes);
-            if(n>0)loaded=new JSONObject(new String(bytes,0,n,StandardCharsets.UTF_8));
-        } catch(Exception ignored) {}
-        survey=loaded==null?new JSONObject():loaded;
+        survey=read(file);
     }
     private static String key(WmbusDecoder.Result d) {
         return d.manufacturer+":"+d.idHex+":"+d.version+":"+d.medium;
