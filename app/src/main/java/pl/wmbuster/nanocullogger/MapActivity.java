@@ -29,7 +29,6 @@ public final class MapActivity extends Activity {
     private final Handler handler=new Handler(Looper.getMainLooper());
     private MapView map;
     private TextView summary;
-    private SurveyStore store;
     private String lastSnapshot="";
     private boolean firstCenter=true;
     private final Runnable refresh=new Runnable() {
@@ -42,7 +41,6 @@ public final class MapActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         Configuration.getInstance().setUserAgentValue(getPackageName()+"/0.2.0");
-        store=new SurveyStore(this);
 
         LinearLayout root=new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -80,7 +78,7 @@ public final class MapActivity extends Activity {
 
     private void redraw() {
         if(map==null)return;
-        JSONObject data=store.snapshot();
+        JSONObject data=SurveyStore.readSnapshot(this);
         String json=data.toString();
         if(lastSnapshot.equals(json))return;
         lastSnapshot=json;
