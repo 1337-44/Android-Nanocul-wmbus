@@ -9,9 +9,11 @@ import path from 'node:path';
 
 const base='app/src/main/assets/wmbus';
 const wasm=await fs.readFile(path.join(base,'wmbusmeters.wasm'));
-const js=await fs.readFile(path.join(base,'wmbusmeters.js'),'utf8');
-const {default:create}=await import('data:text/javascript;base64,'+
-                                    Buffer.from(js).toString('base64'));
+const {pathToFileURL}=await import('node:url');
+const jsFile=path.join(process.cwd(),base,'wmbusmeters.js');
+// Import as ES module from a file: generated Emscripten runtime uses
+// createRequire(import.meta.url), which does not support data: URLs.
+const {default:create}=await import(pathToFileURL(jsFile).href);
 const compiled=await WebAssembly.compile(wasm);
 const stdout=[],stderr=[];
 const mod=await create({
