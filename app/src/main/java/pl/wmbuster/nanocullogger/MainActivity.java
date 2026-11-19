@@ -101,6 +101,9 @@ public final class MainActivity extends Activity {
                 .setAction(NanoCulService.ACTION_STOP));
         }));
         root.addView(button("Eksportuj log JSONL",v->exportLog()));
+        root.addView(button("Mapa nadajników (RSSI + GPS)",v->
+                startActivity(new Intent(this,MapActivity.class))));
+        root.addView(button("Sprawdź aktualizacje z GitHub",v->ReleaseUpdater.check(this)));
         root.addView(text("Stan rejestratora",17,true));
         statusText=text("-",15,false);root.addView(statusText);
         root.addView(text("Lokalizacja telefonu",17,true));
