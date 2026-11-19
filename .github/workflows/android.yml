@@ -41,6 +41,28 @@ jobs:
         run: node tests/wmbusmeters-wasm-smoke.mjs
       - name: Run unit tests and build Android APK
         run: gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon
+      - name: Restore stable Android release signing (optional)
+        if: github.event_name == 'push'
+        env:
+          SIGNING_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: |
+          if [[ -n "$SIGNING_B64" ]]; then
+            test -n "$STORE_PASS" && test -n "$KEY_ALIAS" && test -n "$KEY_PASS"
+            printf '%s' "$SIGNING_B64" | base64 --decode > "$RUNNER_TEMP/nanocul-release.keystore"
+            echo "ANDROID_SIGNING_KEYSTORE=$RUNNER_TEMP/nanocul-release.keystore" >> "$GITHUB_ENV"
+          else
+            echo "No release keystore configured; publishing test-only DEBUG APK"
+          fi
+      - name: Build consistently signed release APK when configured
+        if: env.ANDROID_SIGNING_KEYSTORE != ''
+        env:
+          ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --stacktrace --no-daemon
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -57,12 +79,19 @@ jobs:
           test -n "$VERSION"
           TAG="v$VERSION"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then TAG="$GITHUB_REF_NAME"; fi
-          FILE="app/build/outputs/apk/debug/app-debug.apk"
-          cp "$FILE" NanoCUL_GPS_Logger_debug.apk
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" NanoCUL_GPS_Logger_debug.apk --clobber
+          if [[ -n "${ANDROID_SIGNING_KEYSTORE:-}" ]]; then
+            cp app/build/outputs/apk/release/app-release.apk NanoCUL_GPS_Logger.apk
+            FILE=NanoCUL_GPS_Logger.apk
+            NOTE="Stable-key signed APK. Install on top of a version signed with the same private key."
           else
-            gh release create "$TAG" NanoCUL_GPS_Logger_debug.apk --target "$GITHUB_SHA" \
+            cp app/build/outputs/apk/debug/app-debug.apk NanoCUL_GPS_Logger_debug.apk
+            FILE=NanoCUL_GPS_Logger_debug.apk
+            NOTE="Experimental DEBUG-signed APK. Different workflow runs may use different signing keys. Export logs before reinstalling."
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$FILE" --clobber
+          else
+            gh release create "$TAG" "$FILE" --target "$GITHUB_SHA" \
               --title "NanoCUL GPS Logger $TAG" --prerelease \
-              --notes "Experimental Android USB OTG / CH340 NanoCUL logger. Debug APK for testing; export logs before reinstalling."
+              --notes "$NOTE"
           fi
