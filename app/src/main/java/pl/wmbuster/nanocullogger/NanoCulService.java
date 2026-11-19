@@ -64,6 +64,7 @@ public final class NanoCulService extends Service implements LocationListener {
     private UsbDeviceConnection usbConnection;
     private LocationManager locationManager;
     private BufferedWriter writer;
+    private SurveyStore surveyStore;
     private final Object fileLock=new Object();
     private int baud;
     private String mode;
@@ -98,6 +99,7 @@ public final class NanoCulService extends Service implements LocationListener {
         rejected=0;
         latest="-";
         logFilePath="";
+        surveyStore=new SurveyStore(this);
         status="Otwieranie NanoCUL USB...";
         startPhoneLocation();
         reader=new Thread(()->capture(id),"nanocul-usb-reader");
@@ -144,9 +146,10 @@ public final class NanoCulService extends Service implements LocationListener {
     @Override public void onLocationChanged(Location location) {
         if(location==null || !location.hasAccuracy()) return;
         Location old=latestLocation;
-        if(old==null || old.getElapsedRealtimeNanos()+15_000_000_000L <
-                         SystemClock.elapsedRealtimeNanos() ||
-           location.getAccuracy() <= old.getAccuracy()*2.0f) {
+        if(old==null ||
+           (location.getElapsedRealtimeNanos()>old.getElapsedRealtimeNanos()+
+             1_000_000_000L && location.getAccuracy()<=35.0f) ||
+           location.getAccuracy()<old.getAccuracy()*0.6f) {
             latestLocation=new Location(location);
         }
         Location displayed=latestLocation;
@@ -229,6 +232,11 @@ public final class NanoCulService extends Service implements LocationListener {
             json.put("records",values);
             JSONObject location=currentLocation();
             json.put("location",location==null?JSONObject.NULL:location);
+            // Recompute after EVERY CRC-valid telegram, even when no new
+            // GPS sample is available. Never invent a transmitter coordinate.
+            JSONObject estimate=surveyStore==null?null:
+                    surveyStore.update(d,frame.rssiDbm,location,System.currentTimeMillis());
+            json.put("transmitter_estimate",estimate==null?JSONObject.NULL:estimate);
             writeLog(json);
             received++;
             latest=d.manufacturer+" "+d.id+" · "+d.summary;
