@@ -38,6 +38,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Foreground USB Host + phone-position logger. Session runs while screen is off.
@@ -53,6 +54,7 @@ public final class NanoCulService extends Service implements LocationListener {
     public static volatile String status="Zatrzymano";
     public static volatile String latest="-";
     public static volatile String gpsStatus="Pozycja niedostępna";
+    public static volatile String decoderStatus="wmbusmeters: uruchamianie";
     public static volatile String logFilePath="";
     public static volatile int received;
     public static volatile int rejected;
@@ -65,6 +67,8 @@ public final class NanoCulService extends Service implements LocationListener {
     private LocationManager locationManager;
     private BufferedWriter writer;
     private SurveyStore surveyStore;
+    private WasmMeterDecoder wasmDecoder;
+    private final AtomicLong telegramIds=new AtomicLong(System.currentTimeMillis()*1000L);
     private final Object fileLock=new Object();
     private int baud;
     private String mode;
@@ -100,6 +104,49 @@ public final class NanoCulService extends Service implements LocationListener {
         latest="-";
         logFilePath="";
         surveyStore=new SurveyStore(this);
+        decoderStatus="wmbusmeters: uruchamianie WebAssembly";
+        wasmDecoder=new WasmMeterDecoder(this,new WasmMeterDecoder.Listener() {
+            @Override public void onReady(String info) {
+                decoderStatus="wmbusmeters WASM: gotowy";
+            }
+            @Override public void onError(String msg) {
+                decoderStatus="wmbusmeters: "+msg;
+            }
+            @Override public void onResult(long id,String result) {
+                try {
+                    JSONObject value=new JSONObject(result);
+                    JSONObject entry=new JSONObject();
+                    entry.put("event","decode_update");
+                    entry.put("telegram_id",id);
+                    entry.put("timestamp_utc",Instant.now().toString());
+                    entry.put("decoder","wmbusmeters_wasm");
+                    entry.put("status",value.optString("status","undecoded"));
+                    entry.put("reading",value.optJSONObject("reading")==null?
+                        JSONObject.NULL:value.getJSONObject("reading"));
+                    // A decoder error or unknown encrypted packet is not a reading.
+                    entry.put("diagnostics",value.optString("diagnostics",""));
+                    writeLog(entry);
+                    JSONObject reading=value.optJSONObject("reading");
+                    if("decoded".equals(value.optString("status")) && reading!=null) {
+                        String readingName=reading.optString("meter","meter");
+                        String meterId=reading.optString("id","");
+                        String field="";
+                        java.util.Iterator<String> keys=reading.keys();
+                        while(keys.hasNext()){
+                            String k=keys.next();
+                            if(k.endsWith("_m3")||k.endsWith("_m3h")||
+                               k.endsWith("_kwh")||k.endsWith("_unit")){
+                                field=k+": "+reading.optString(k);break;
+                            }
+                        }
+                        latest="wmbusmeters "+readingName+" "+meterId+
+                               (field.isEmpty()?"":" · "+field);
+                    }
+                } catch(Exception ignored) {
+                    decoderStatus="wmbusmeters: nieprawidłowa odpowiedź";
+                }
+            }
+        });
         status="Otwieranie NanoCUL USB...";
         startPhoneLocation();
         reader=new Thread(()->capture(id),"nanocul-usb-reader");
@@ -209,7 +256,9 @@ public final class NanoCulService extends Service implements LocationListener {
     private void logFrame(CulParser.Frame frame) {
         try {
             WmbusDecoder.Result d=WmbusDecoder.decode(frame.linkFrame);
+            long telegramId=telegramIds.incrementAndGet();
             JSONObject json=new JSONObject();
+            json.put("telegram_id",telegramId);
             json.put("timestamp_utc",Instant.now().toString());
             json.put("source","nanoCUL_USB");
             json.put("mode",mode);
@@ -237,7 +286,13 @@ public final class NanoCulService extends Service implements LocationListener {
             JSONObject estimate=surveyStore==null?null:
                     surveyStore.update(d,frame.rssiDbm,location,System.currentTimeMillis());
             json.put("transmitter_estimate",estimate==null?JSONObject.NULL:estimate);
+            // Basic OMS and raw frame are recorded immediately, even if
+            // the independent WASM decoder isn't available on this device.
+            json.put("decoder","basic_oms");
+            boolean wasmReady=wasmDecoder!=null && wasmDecoder.isReady();
+            json.put("wmbusmeters_status",wasmReady?"queued":"unavailable");
             writeLog(json);
+            if(wasmReady)wasmDecoder.submit(telegramId,frame.wireHex);
             received++;
             latest=d.manufacturer+" "+d.id+" · "+d.summary;
             status="Odbiór: "+received+" ramek (odrzucone: "+rejected+")";
@@ -338,6 +393,10 @@ public final class NanoCulService extends Service implements LocationListener {
 
     @Override public void onDestroy() {
         stopRequested=true;
+        if(wasmDecoder!=null) {
+            wasmDecoder.close();
+            wasmDecoder=null;
+        }
         try {
             if(locationManager!=null)locationManager.removeUpdates(this);
         } catch(Exception ignored){}
