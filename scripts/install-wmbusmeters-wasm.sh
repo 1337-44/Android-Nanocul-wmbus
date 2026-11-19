@@ -9,7 +9,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="$ROOT/app/src/main/assets/wmbus"
 mkdir -p "$DIR"
 check() {
-    local name="$1" expected="$2" file="$DIR/$name"
+    local name="$1" expected="$2"
+    local file="$DIR/$name"
     curl --fail --location --retry 3 --max-time 120 --silent --show-error \
         "https://raw.githubusercontent.com/jasiek/web-rtl-wmbus/$COMMIT/src/wasm/$name" -o "$file"
     local actual
