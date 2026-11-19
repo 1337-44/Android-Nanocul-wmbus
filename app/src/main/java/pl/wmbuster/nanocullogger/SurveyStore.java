@@ -1,0 +1,120 @@
+package pl.wmbuster.nanocullogger;
+
+import android.content.Context;
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+
+/** Local survey storage: one meter identity with samples and a recalculated
+ * RSSI-only candidate position. Never infer location from a single packet.
+ * No network access, no extra location permission beyond the recorder. */
+public final class SurveyStore {
+    private final File file;
+    private final JSONObject survey;
+    public SurveyStore(Context context) {
+        file=new File(context.getFilesDir(),"radio-survey.json");
+        JSONObject loaded=null;
+        try(FileInputStream in=new FileInputStream(file)) {
+            byte[] bytes=new byte[(int)Math.min(file.length(),3_000_000)];
+            int n=in.read(bytes);
+            if(n>0)loaded=new JSONObject(new String(bytes,0,n,StandardCharsets.UTF_8));
+        } catch(Exception ignored) {}
+        survey=loaded==null?new JSONObject():loaded;
+    }
+    private static String key(WmbusDecoder.Result d) {
+        return d.manufacturer+":"+d.idHex+":"+d.version+":"+d.medium;
+    }
+    private static RssiLocator.Observation sample(JSONObject j) {
+        return new RssiLocator.Observation(
+                j.optDouble("lat",Double.NaN),j.optDouble("lon",Double.NaN),
+                j.optDouble("accuracy_m",Double.NaN),j.optInt("rssi",-127),
+                j.optLong("timestamp",0));
+    }
+    /** Called for every valid, CRC-confirmed radio telegram. If GPS or RSSI is
+     * missing, re-evaluate existing samples without adding a fake reading. */
+    public synchronized JSONObject update(
+            WmbusDecoder.Result d,Integer rssi,JSONObject gps,long epochMs) {
+        try {
+            String identity=key(d);
+            JSONObject meter=survey.optJSONObject(identity);
+            if(meter==null) {
+                meter=new JSONObject();
+                meter.put("id",d.id);
+                meter.put("manufacturer",d.manufacturer);
+                meter.put("medium",d.media);
+                meter.put("version",d.version);
+                meter.put("key",identity);
+                meter.put("samples",new JSONArray());
+                survey.put(identity,meter);
+            }
+            JSONArray samples=meter.getJSONArray("samples");
+            boolean added=false;
+            if(gps!=null && rssi!=null && gps.has("lat") && gps.has("lon")) {
+                double acc=gps.optDouble("accuracy_m",Double.NaN);
+                double lat=gps.optDouble("lat",Double.NaN);
+                double lon=gps.optDouble("lon",Double.NaN);
+                if(Double.isFinite(acc)&&acc>0&&acc<=35&&
+                   Double.isFinite(lat)&&Double.isFinite(lon)&&
+                   lat>=-85&&lat<=85&&lon>=-180&&lon<=180&&
+                   rssi>=-120&&rssi<=-20) {
+                    JSONObject point=new JSONObject();
+                    point.put("lat",lat);point.put("lon",lon);
+                    point.put("accuracy_m",acc);
+                    point.put("rssi",rssi);point.put("timestamp",epochMs);
+                    samples.put(point);
+                    added=true;
+                }
+            }
+            // Retain a bounded number of measurements per meter.
+            while(samples.length()>160)samples.remove(0);
+            List<RssiLocator.Observation> pts=new ArrayList<>(samples.length());
+            for(int i=0;i<samples.length();i++) {
+                JSONObject s=samples.optJSONObject(i);
+                if(s!=null)pts.add(sample(s));
+            }
+            RssiLocator.Estimate estimate=RssiLocator.estimate(pts);
+            JSONObject pos=null;
+            if(estimate!=null) {
+                pos=new JSONObject();
+                pos.put("lat",estimate.lat);
+                pos.put("lon",estimate.lon);
+                pos.put("uncertainty_m",estimate.uncertaintyM);
+                pos.put("fit_error_db",estimate.fitErrorDb);
+                pos.put("distinct_sites",estimate.locations);
+                pos.put("observations",estimate.measurements);
+                pos.put("model","relative_rssi_log_distance_v1");
+                pos.put("status","estimated_not_verified");
+                meter.put("estimate",pos);
+            } else {
+                meter.remove("estimate");
+            }
+            meter.put("last_seen",epochMs);
+            if(added)persist();
+            return pos;
+        } catch(Exception ignored) {
+            return null;
+        }
+    }
+    public synchronized JSONObject snapshot() {
+        try {return new JSONObject(survey.toString());}
+        catch(Exception e) {return new JSONObject();}
+    }
+    private void persist() {
+        File temp=new File(file.getParentFile(),file.getName()+".tmp");
+        try(FileOutputStream stream=new FileOutputStream(temp)) {
+            stream.write(survey.toString().getBytes(StandardCharsets.UTF_8));
+            stream.getFD().sync();
+        } catch(Exception e){return;}
+        // Atomic swap on the same filesystem.
+        if(!temp.renameTo(file)) {
+            // Don't truncate a working history if the rename fails.
+            temp.delete();
+        }
+    }
+}
