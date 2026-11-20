@@ -138,7 +138,8 @@ public final class MainActivity extends Activity {
                 statusText.setText((NanoCulService.running?"● Rejestracja trwa · ":"")+
                         NanoCulService.status+"\nRamki: "+NanoCulService.received+
                         " · Błędne: "+NanoCulService.rejected+
-                        "\n"+NanoCulService.decoderStatus);
+                        "\n"+NanoCulService.decoderStatus+
+                        "\n"+NanoCulService.surveyStatus);
                 gpsText.setText(NanoCulService.gpsStatus);
                 lastText.setText(NanoCulService.latest);
                 logText.setText(NanoCulService.logFilePath.isEmpty()?
