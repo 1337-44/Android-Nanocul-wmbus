@@ -291,7 +291,7 @@ public final class SurveyStore {
         SurveyStore active=NanoCulService.activeSurvey;
         if(active!=null)active.flush();
         JSONObject data=readSnapshot(context);
-        out.write(data.toString(2).getBytes(StandardCharsets.UTF_8));
+        out.write(data.toString().getBytes(StandardCharsets.UTF_8));
         out.flush();
     }
     /**
