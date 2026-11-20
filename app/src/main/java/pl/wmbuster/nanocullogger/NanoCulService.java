@@ -56,6 +56,8 @@ public final class NanoCulService extends Service implements LocationListener {
     public static volatile String gpsStatus="Pozycja niedostępna";
     public static volatile String surveyStatus="Mapa: brak zapisanych punktów GPS/RSSI";
     public static volatile String decoderStatus="wmbusmeters: uruchamianie";
+    public static volatile SurveyStore activeSurvey;
+    public static volatile Location latestGpsFix;
     public static volatile String logFilePath="";
     public static volatile int received;
     public static volatile int rejected;
@@ -106,6 +108,8 @@ public final class NanoCulService extends Service implements LocationListener {
         latest="-";
         logFilePath="";
         surveyStore=new SurveyStore(this);
+        activeSurvey=surveyStore;
+        latestGpsFix=null;
         decoderStatus="wmbusmeters: uruchamianie WebAssembly";
         wasmDecoder=new WasmMeterDecoder(this,new WasmMeterDecoder.Listener() {
             @Override public void onReady(String info) {
@@ -203,6 +207,7 @@ public final class NanoCulService extends Service implements LocationListener {
             latestLocation=new Location(location);
         }
         Location displayed=latestLocation;
+        latestGpsFix=new Location(displayed);
         gpsStatus=String.format(java.util.Locale.ROOT,"GPS %.6f, %.6f ±%.0f m",
                 displayed.getLatitude(),displayed.getLongitude(),displayed.getAccuracy());
     }
@@ -401,6 +406,8 @@ public final class NanoCulService extends Service implements LocationListener {
 
     @Override public void onDestroy() {
         stopRequested=true;
+        if(surveyStore!=null)surveyStore.flush();
+        activeSurvey=null;
         if(wasmDecoder!=null) {
             wasmDecoder.close();
             wasmDecoder=null;
