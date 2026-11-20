@@ -14,7 +14,6 @@ import java.util.List;
  */
 public final class RssiLocator {
     private static final double EARTH_M = 6371000.0;
-    private static final double EXPONENT = 2.6;
     private static final double METERS_PER_DEG = Math.PI * EARTH_M / 180.0;
 
     public static final class Observation {
@@ -28,9 +27,13 @@ public final class RssiLocator {
     }
     public static final class Estimate {
         public final double lat,lon,uncertaintyM,fitErrorDb;
+        public final double qualityScore,exponent,spanM;
         public final int locations,measurements;
-        Estimate(double lat,double lon,double uncertainty,double error,int locations,int measurements) {
-            this.lat=lat; this.lon=lon; uncertaintyM=uncertainty; fitErrorDb=error;
+        Estimate(double lat,double lon,double uncertainty,double error,
+                 double quality,double exponent,double span,
+                 int locations,int measurements) {
+            this.lat=lat;this.lon=lon;uncertaintyM=uncertainty;fitErrorDb=error;
+            this.qualityScore=quality;this.exponent=exponent;this.spanM=span;
             this.locations=locations;this.measurements=measurements;
         }
     }
@@ -102,44 +105,62 @@ public final class RssiLocator {
         double major=(tr+discr)/2,minor=(tr-discr)/2;
         if(span<60 || major<=0 || minor/major<0.075)return null;
 
-        // Coarse-to-fine relative-RSSI least-squares search. TX power is
-        // fitted at every candidate: RSSI = P - 10*n*log10(distance).
-        // This provides a rough point, not a calibrated propagation model.
-        double range=Math.min(1800, Math.max(120,span*1.6));
-        double cx=mx,cy=my;
-        for(int pass=0;pass<3;pass++) {
-            double bestCost=Double.POSITIVE_INFINITY,bx=cx,by=cy;
-            for(int ix=-12;ix<=12;ix++)for(int iy=-12;iy<=12;iy++) {
-                double px=cx+range*ix/12.0,py=cy+range*iy/12.0;
-                double cost=cost(sites,px,py);
-                if(cost<bestCost){bestCost=cost;bx=px;by=py;}
+        // Relative RSSI fit: unknown Tx power AND environmental path-loss
+        // exponent (1.8 .. 4.0) are nuisance parameters. A candidate position
+        // with artificially tiny error is not automatically a precise fix.
+        double best=Double.POSITIVE_INFINITY,bx=mx,by=my,bn=2.6;
+        for(double n : new double[]{1.8,2.2,2.6,3.0,3.4,4.0}) {
+            double range=Math.min(1800,Math.max(120,span*1.6));
+            double cx=mx,cy=my;
+            for(int pass=0;pass<3;pass++) {
+                double passBest=Double.POSITIVE_INFINITY,pxBest=cx,pyBest=cy;
+                for(int ix=-9;ix<=9;ix++)for(int iy=-9;iy<=9;iy++) {
+                    double px=cx+range*ix/9.0,py=cy+range*iy/9.0;
+                    double value=cost(sites,px,py,n);
+                    if(value<passBest){passBest=value;pxBest=px;pyBest=py;}
+                }
+                cx=pxBest;cy=pyBest;
+                range/=5;
             }
-            cx=bx;cy=by;range/=5;
+            double value=cost(sites,cx,cy,n);
+            if(value<best){best=value;bx=cx;by=cy;bn=n;}
         }
-        double err=Math.sqrt(cost(sites,cx,cy));
-        if(!Double.isFinite(err) || err>18)return null;
-        // A heuristic uncertainty envelope (NOT a 95% confidence interval).
-        // Preserve generous minimum error even with noiseless synthetic data.
-        double radius=Math.max(75,Math.max(3*meanAcc,span*(0.25+err/20.0)));
+        double err=Math.sqrt(best);
+        if(!Double.isFinite(err)||err>17)return null;
+        if(Math.hypot(bx-mx,by-my)>Math.max(300,span*2))return null;
+
+        // Heuristic radius/score. They do NOT represent calibrated
+        // confidence probabilities and can be wrong due to NLOS/multipath.
+        double radius=Math.max(75,Math.max(3*meanAcc,
+                             span*(0.25+err/20.0)));
         radius=Math.min(radius,2500);
-        return new Estimate(lat0+cy/northScale,lon0+cx/eastScale,
-                            radius,err,sites.size(),usable.size());
+        double quality=Math.max(0,Math.min(83,
+            18+12*Math.log1p(sites.size())+17*Math.min(1,span/250)-
+            2.9*err-0.035*radius));
+        if(quality<15)return null;
+        return new Estimate(lat0+by/northScale,lon0+bx/eastScale,
+                            radius,err,quality,bn,span,sites.size(),usable.size());
     }
 
-    private static double cost(List<Site> sites,double x,double y) {
-        double sum=0;
-        for(Site s:sites){
+    private static double cost(List<Site> sites,double x,double y,double exponent) {
+        double sum=0,meanWeight=0;
+        for(Site s:sites) {
             double d=Math.max(3,Math.hypot(x-s.x,y-s.y));
-            sum+=s.rssi+10*EXPONENT*Math.log10(d);
+            // One site counts once, not once per every meter telegram.
+            double w=1.0/Math.max(1,Math.sqrt(s.accuracy/5.0));
+            sum+=w*(s.rssi+10*exponent*Math.log10(d));
+            meanWeight+=w;
         }
-        double power=sum/sites.size();
+        if(meanWeight==0)return Double.POSITIVE_INFINITY;
+        double power=sum/meanWeight;
         double error=0;
         for(Site s:sites) {
             double d=Math.max(3,Math.hypot(x-s.x,y-s.y));
-            double expected=power-10*EXPONENT*Math.log10(d);
-            // Huber-ish clamp limits effect of drastic multipath/outliers.
-            double residual=Math.max(-18,Math.min(18,s.rssi-expected));
-            error+=residual*residual;
+            double expected=power-10*exponent*Math.log10(d);
+            double residual=Math.abs(s.rssi-expected);
+            // Huber's bounded-influence loss resists severe fading/outliers.
+            error+=residual<=8 ? residual*residual :
+                   16*residual-64;
         }
         return error/sites.size();
     }
