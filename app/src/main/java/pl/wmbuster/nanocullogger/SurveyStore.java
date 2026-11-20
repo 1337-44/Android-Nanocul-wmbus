@@ -8,6 +8,8 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -278,6 +280,72 @@ public final class SurveyStore {
     }
 
     public synchronized void flush() {persist();}
+    /**
+     * Portable full radio-survey backup, including old GPS/RSSI sessions AND
+     * explicit manual compass bearings. Unlike the best-position CSV, this
+     * allows further model recalculation after APK reinstall.
+     */
+    public static void exportSurveyBackup(Context context,OutputStream out)
+            throws IOException {
+        if(out==null)throw new IOException("Nie można otworzyć pliku docelowego");
+        SurveyStore active=NanoCulService.activeSurvey;
+        if(active!=null)active.flush();
+        JSONObject data=readSnapshot(context);
+        out.write(data.toString(2).getBytes(StandardCharsets.UTF_8));
+        out.flush();
+    }
+    /**
+     * Import app-created JSON survey backup when scanner is stopped.
+     * Replaces existing history (user must confirm) and recalculates every
+     * transmitter from archived GPS/RSSI and bearings.
+     */
+    public static int importSurveyBackup(Context context,InputStream in)
+            throws IOException {
+        if(in==null)throw new IOException("Nie można otworzyć kopii danych");
+        ByteArrayOutputStream result=new ByteArrayOutputStream();
+        byte[] buf=new byte[8192];int n;
+        while((n=in.read(buf))!=-1) {
+            if(result.size()+n>12_000_000)
+                throw new IOException("Kopia przekracza 12 MB");
+            result.write(buf,0,n);
+        }
+        JSONObject parsed;
+        try {parsed=new JSONObject(result.toString("UTF-8"));}
+        catch(Exception ex){throw new IOException("To nie jest poprawny JSON pomiarów",ex);}
+        JSONArray names=parsed.names();
+        if(names==null)throw new IOException("Brak liczników w kopii");
+        if(names.length()>1200)throw new IOException("Za wiele liczników");
+        for(int i=0;i<names.length();i++) {
+            String key=names.optString(i);
+            JSONObject meter=parsed.optJSONObject(key);
+            if(key.length()>120 || key.isEmpty() || meter==null ||
+               !meter.has("id") || !meter.has("manufacturer"))
+                throw new IOException("Nieprawidłowy identyfikator licznika");
+            JSONArray samples=meter.optJSONArray("samples");
+            JSONArray bearings=meter.optJSONArray("bearings");
+            if(samples!=null && samples.length()>500 ||
+               bearings!=null && bearings.length()>150)
+                throw new IOException("Nieprawidłowe długości zbioru");
+        }
+        File file=new File(context.getFilesDir(),"radio-survey.json");
+        File tmp=new File(file.getParentFile(),"radio-survey.import");
+        try(FileOutputStream out=new FileOutputStream(tmp)) {
+            out.write(parsed.toString().getBytes(StandardCharsets.UTF_8));
+            out.getFD().sync();
+        }
+        if(!tmp.renameTo(file))throw new IOException("Błąd zapisu kopii");
+        SurveyStore imported=new SurveyStore(context);
+        for(int i=0;i<names.length();i++) {
+            JSONObject meter=imported.survey.optJSONObject(names.optString(i));
+            if(meter==null)continue;
+            try {imported.recalculate(names.optString(i),meter,
+                      System.currentTimeMillis());}
+            catch(Exception ignored){}
+        }
+        imported.persist();
+        return names.length();
+    }
+
     public synchronized String latestStatus() {return lastStatus;}
 
     public static final class ImportReport {
