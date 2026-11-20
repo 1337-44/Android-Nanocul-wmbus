@@ -234,6 +234,10 @@ public final class DirectionCaptureActivity extends Activity implements SensorEv
         if(age<0 || age>45000){
             show("Brak świeżego telegramu tego nadajnika (<=45 s).");return;
         }
+        int rssi=meter.optInt("last_rssi_dbm",-127);
+        if(rssi<-120 || rssi>-20){
+            show("Brak RSSI z X21. Najpierw potwierdź maksimum sygnału.");return;
+        }
         if(pos==null || !pos.hasAccuracy() || pos.getAccuracy()>35) {
             show("Potrzebny aktualny i dokładny GPS (<=35 m).");return;
         }
