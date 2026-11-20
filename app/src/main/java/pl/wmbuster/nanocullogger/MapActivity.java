@@ -124,7 +124,8 @@ public final class MapActivity extends Activity {
         marker.setAnchor(Marker.ANCHOR_CENTER,Marker.ANCHOR_BOTTOM);
         marker.setTitle("POMIAR GPS: "+manufacturer+" "+meter);
         marker.setSnippet("Miejsce odbioru przez telefon, NIE pozycja nadajnika. "+
-            "RSSI "+rssi+" dBm; GPS ±"+Math.round(accuracy)+" m");
+            (rssi<=-121?"Brak RSSI":"RSSI "+rssi+" dBm")+
+            "; GPS ±"+Math.round(accuracy)+" m");
         map.getOverlays().add(marker);
     }
 
@@ -155,7 +156,8 @@ public final class MapActivity extends Activity {
         if(lastSnapshot.equals(json))return;
         lastSnapshot=json;
         map.getOverlays().clear();
-        int meters=data.length(),estimated=0,totalSamples=0,drawn=0,metersWithGps=0;
+        int meters=data.length(),estimated=0,totalSamples=0,drawn=0;
+        int metersWithGps=0,withRssi=0;
         GeoPoint first=null;
         List<JSONObject> meterRows=new ArrayList<>();
         JSONArray names=data.names();
@@ -171,6 +173,7 @@ public final class MapActivity extends Activity {
             String id=meter.optString("manufacturer")+" "+meter.optString("id");
             JSONArray samples=meter.optJSONArray("samples");
             int sampleCount=samples==null?0:samples.length();
+            int meterRssi=0;
             totalSamples+=sampleCount;
             if(sampleCount>0)metersWithGps++;
 
@@ -178,6 +181,8 @@ public final class MapActivity extends Activity {
             if(samples!=null)for(int i=samples.length()-1;i>=0;i--) {
                 JSONObject p=samples.optJSONObject(i);
                 if(p==null)continue;
+                if(p.has("rssi") && !p.isNull("rssi") &&
+                   p.optInt("rssi",-127)>-121) meterRssi++;
                 double lat=p.optDouble("lat",Double.NaN),
                        lon=p.optDouble("lon",Double.NaN);
                 if(!Double.isFinite(lat)||!Double.isFinite(lon))continue;
@@ -197,6 +202,7 @@ public final class MapActivity extends Activity {
                 // Bound processing for large surveys; each meter already keeps <=160.
             }
 
+            withRssi+=meterRssi;
             JSONObject candidate=meter.optJSONObject("estimate");
             if(candidate!=null) {
                 double lat=candidate.optDouble("lat",Double.NaN),
@@ -211,7 +217,8 @@ public final class MapActivity extends Activity {
             if(shown++<5) {
                 details.append("\n").append(id)
                        .append(" · ").append(meter.optInt("received_count",0))
-                       .append(" ram. · ").append(sampleCount).append(" GPS");
+                       .append(" ram. · ").append(sampleCount).append(" GPS")
+                       .append(" (").append(meterRssi).append(" RSSI)");
                 if(candidate==null) {
                     if(sampleCount==0)
                         details.append(" · ").append(meter.optString("last_gps_status",
@@ -236,7 +243,8 @@ public final class MapActivity extends Activity {
         }
         StringBuilder top=new StringBuilder()
             .append("Liczniki: ").append(meters)
-            .append(" · GPS/RSSI: ").append(totalSamples)
+            .append(" · GPS: ").append(totalSamples)
+            .append(" · RSSI: ").append(withRssi)
             .append(" · punkty na mapie: ").append(drawn)
             .append(" · szacunki nadajników: ").append(estimated);
         if(meters==0)
@@ -244,6 +252,9 @@ public final class MapActivity extends Activity {
         else if(totalSamples==0)
             top.append("\nŻaden z odebranych telegramów nie miał zaakceptowanego "+
                 "GPS (świeży fix, dokładność <=35 m) i RSSI.");
+        else if(withRssi==0)
+            top.append("\nZebrano GPS, ale brak RSSI: sprawdź czy culfw wysyła "+
+                "metadane przez X21. Nadajników bez RSSI nie lokalizujemy.");
         else if(estimated==0)
             top.append("\nSą punkty pomiarowe, ale brak wiarygodnego szacunku "+
                 "(min. 4 różne miejsca / >=60 m / trasa nie po linii).");
