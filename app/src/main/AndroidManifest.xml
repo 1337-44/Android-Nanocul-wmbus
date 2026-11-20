@@ -21,6 +21,7 @@
             </intent-filter>
         </activity>
         <activity android:name=".MapActivity" android:exported="false"/>
+        <activity android:name=".DirectionCaptureActivity" android:exported="false"/>
         <service
             android:name=".NanoCulService"
             android:exported="false"
