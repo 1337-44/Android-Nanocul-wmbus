@@ -7,6 +7,98 @@ Skaner radiowy wM-Bus na telefon z Androidem. Odbiera telegramy z
 dekoduje pomiary, loguje RSSI i GPS telefonu i szacuje położenie
 nadajników z odczytów z wielu miejsc. Flipper Zero nie jest potrzebny.
 
+## Wersja 0.4.0: trwałe pozycje i namiary anteną kierunkową
+
+### Stały rejestr nadajników
+
+Po wyznaczeniu pozycji aplikacja przechowuje osobno:
+
+- **`transmitter_positions.csv`** — jedna linia na nadajnik:
+  numer seryjny (`serial`), producent, szerokość i długość geograficzna,
+  `quality_score`, orientacyjna `uncertainty_m`, metoda i liczba
+  stanowisk. Pozycja **zastępuje starszą tylko wtedy**, gdy nowy zestaw
+  pomiarów ma lepszą ocenę modelu i nie pogarsza znacząco niepewności,
+  albo istotnie zmniejsza jej promień bez pogorszenia oceny.
+  Skala 0–100 to ranking **nie jest procentowym prawdopodobieństwem**.
+- **`radio-survey.json`** — pełna baza pomiarów GPS/RSSI oraz ręcznych
+  namiarów, zachowana między sesjami i ponownie wykorzystywana przez
+  estymator przy kolejnym telegramie.
+
+CSV powstaje automatycznie w prywatnym katalogu aplikacji
+`Android/data/<pakiet>/files/Documents/nanoCUL/transmitter_positions.csv`.
+Aby mieć **własną kopię pliku** widoczną w systemowym folderze,
+kliknij w aplikacji **Eksportuj najlepsze pozycje (CSV)**.
+
+**Bardzo ważne:** przed odinstalowaniem aplikacji (np. z powodu
+niezgodnego podpisu APK) wybierz także
+**Eksportuj bazę poprzednich sesji (JSON)**. Dopiero ten plik zawiera
+surowe punkty GPS, RSSI i zapisane kierunki anteny. Po instalacji nowej
+wersji użyj **Przywróć bazę poprzednich sesji (JSON)**. Import bazy
+zastępuje historię w aplikacji — nie wykonuj tego podczas skanowania.
+
+### Algorytm RSSI + GPS
+
+Współrzędne telefonu i **względne** RSSI liczników są dopasowywane do
+modelu logarytmicznej zależności tłumienia od odległości. Algorytm
+w 0.4 dopasowuje także nieznany współczynnik propagacji (1,8–4,0)
+i poziom nadawania, a do strat używa odpornej funkcji Hubera.
+Powtórzenia z jednego stanowiska są agregowane (ok. 12 m), dlatego
+250 telegramów z jednego miejsca nie udaje 250 niezależnych punktów.
+W bazie zachowujemy do 400 punktów z różnych lokalizacji na nadajnik.
+
+Szacunki RSSI mają **dużą, orientacyjną niepewność**, szczególnie w
+otoczeniu zabudowy, metalowych przeszkód i odbić. Nie można ich
+traktować jako GPS licznika ani 95% przedziału ufności.
+
+### ARDF / antena kierunkowa (manualne namiary)
+
+1. Podłącz antenę kierunkową do NanoCUL. Do kalibracji kompasu odsuń
+   telefon od metalu, przewodów prądowych, magnesów i innych urządzeń
+   zakłócających wskazanie.
+2. Uruchom odbiór USB, wybierz **Antena kierunkowa — zapisz namiary**.
+3. Wybierz **konkretny licznik** (ID). Każdy namiar jest przypisany
+   wyłącznie do tego samego licznika, a nie do wszystkich telegramów.
+4. Ustaw telefon **poziomo ekranem w górę**, z górną krawędzią
+   skierowaną równolegle do osi głównej wiązki anteny. Jeśli mocowanie
+   jest przekręcone, zastosuj regulator korekty azymutu.
+5. Obracaj antenę i obserwuj RSSI z kolejnych telegramów tego licznika.
+   Na maksimum kierunkowego sygnału naciśnij **ZAPISZ AZYMUT**.
+   Nie przechowujemy automatycznie przypadkowych kierunków telefonu.
+6. Przejdź do 2–3 kolejnych stanowisk, oddalonych od poprzednich.
+   Dla oszacowania żądamy **min. 3 różnych stanowisk oddalonych
+   łącznie o co najmniej 30 m**. Najlepsze wyniki daje przecinanie
+   namiarów pod wyraźnie różnymi kątami, a nie trzy niemal równoległe
+   kierunki. Na mapie zielone linie wskazują ręczne namiary.
+7. Aplikacja wyznacza punkt metodą odpornych najmniejszych kwadratów
+   (IRLS/Huber) z odrzuceniem kierunków odstających i sprawdzeniem,
+   czy przecięcie leży przed anteną (nie na przedłużeniu wstecznym).
+   Wynik wraz z orientacyjnym błędem może poprawić zapisany CSV.
+
+Wykorzystujemy `TYPE_ROTATION_VECTOR` Androida i `GeomagneticField`
+do poprawki deklinacji (północ magnetyczna → geograficzna).
+Kompas wymaga kalibracji i może wariować w pobliżu metalu.
+Odbicia radiowe mogą wskazywać pozorny kierunek. Przy antenach z
+symetrycznymi listkami (np. niektóre konstrukcje pętlowe) trzeba
+rozstrzygnąć **niejednoznaczność przód/tył** przed zapisaniem azymutu.
+
+**Założenie modelu:** nadajnik stoi nieruchomo, a telefon/odbiornik
+przemieszcza się. Jeżeli faktycznie nadajnik również się porusza,
+potrzebny jest odrębny filtr śledzący z modelem ruchu; ta wersja
+nie próbuje z wielu czasów obliczać jednej pozycji ruchomego nadajnika.
+
+### Podpis APK i aktualizacje
+
+Mechanizmu aktualizacji nie da się poprawić tylko przyciskiem:
+Android porównuje podpis starego i nowego APK. Wersje debugowe z różnych
+biegów GitHub Actions są podpisane różnymi kluczami. W repozytorium
+pozostaje **opcjonalny** proces podpisywania stałym, PRYWATNYM kluczem
+z GitHub Secrets — wymaga jednorazowej konfiguracji po stronie właściciela.
+Nie publikuj prywatnego klucza ani haseł w repozytorium. Przy przejściu
+z obecnego debug APK do stabilnie podpisanego wydania konieczna jest
+jedna reinstalacja, więc najpierw wyeksportuj bazę JSON i CSV.
+
+---
+
 ## Poprawka mapy w 0.3.1
 
 **Odebrane ramki to nie szacunki pozycji nadajnika.** We wcześniejszej
