@@ -54,6 +54,7 @@ public final class NanoCulService extends Service implements LocationListener {
     public static volatile String status="Zatrzymano";
     public static volatile String latest="-";
     public static volatile String gpsStatus="Pozycja niedostępna";
+    public static volatile String surveyStatus="Mapa: brak zapisanych punktów GPS/RSSI";
     public static volatile String decoderStatus="wmbusmeters: uruchamianie";
     public static volatile String logFilePath="";
     public static volatile int received;
@@ -101,6 +102,7 @@ public final class NanoCulService extends Service implements LocationListener {
         stopRequested=false;
         received=0;
         rejected=0;
+        surveyStatus="Mapa: sprawdzanie GPS i RSSI";
         latest="-";
         logFilePath="";
         surveyStore=new SurveyStore(this);
@@ -178,6 +180,7 @@ public final class NanoCulService extends Service implements LocationListener {
             return;
         }
         locationManager=(LocationManager)getSystemService(Context.LOCATION_SERVICE);
+        gpsStatus="Oczekiwanie na aktualny odczyt lokalizacji telefonu...";
         for(String provider:new String[]{LocationManager.GPS_PROVIDER,LocationManager.NETWORK_PROVIDER}) {
             try {
                 if(locationManager.isProviderEnabled(provider)) {
@@ -206,7 +209,10 @@ public final class NanoCulService extends Service implements LocationListener {
 
     private JSONObject currentLocation() throws Exception {
         Location location=latestLocation;
-        if(location==null) return null;
+        if(location==null) {
+            gpsStatus="Brak aktualnej pozycji GPS; włącz lokalizację i wyjdź na otwartą przestrzeń";
+            return null;
+        }
         long age=(SystemClock.elapsedRealtimeNanos()-
                 location.getElapsedRealtimeNanos())/1_000_000L;
         if(age<0 || age>20_000L) {
@@ -285,6 +291,8 @@ public final class NanoCulService extends Service implements LocationListener {
             // GPS sample is available. Never invent a transmitter coordinate.
             JSONObject estimate=surveyStore==null?null:
                     surveyStore.update(d,frame.rssiDbm,location,System.currentTimeMillis());
+            surveyStatus=surveyStore==null?"Mapa: magazyn niedostępny":
+                    "Mapa: "+surveyStore.latestStatus();
             json.put("transmitter_estimate",estimate==null?JSONObject.NULL:estimate);
             // Basic OMS and raw frame are recorded immediately, even if
             // the independent WASM decoder isn't available on this device.
