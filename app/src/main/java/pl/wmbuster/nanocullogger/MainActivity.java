@@ -28,6 +28,7 @@ import com.hoho.android.usbserial.driver.UsbSerialProber;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Comparator;
 import java.util.List;
@@ -37,6 +38,7 @@ import java.util.List;
 public final class MainActivity extends Activity {
     private static final int PERMISSIONS=8;
     private static final int EXPORT=9;
+    private static final int IMPORT=10;
     private final String usbPermissionAction="pl.wmbuster.nanocullogger.USB_PERMISSION";
     private final Handler handler=new Handler(Looper.getMainLooper());
     private TextView statusText,gpsText,lastText,logText,usbText;
@@ -101,6 +103,7 @@ public final class MainActivity extends Activity {
                 .setAction(NanoCulService.ACTION_STOP));
         }));
         root.addView(button("Eksportuj log JSONL",v->exportLog()));
+        root.addView(button("Przywróć mapę z logu JSONL",v->importLog()));
         root.addView(button("Mapa nadajników (RSSI + GPS)",v->
                 startActivity(new Intent(this,MapActivity.class))));
         root.addView(button("Sprawdź aktualizacje z GitHub",v->ReleaseUpdater.check(this)));
@@ -225,6 +228,16 @@ public final class MainActivity extends Activity {
             else startService(intent);
         }catch(Exception ex){alert("Nie można rozpocząć: "+ex.getMessage());}
     }
+    private void importLog(){
+        if(NanoCulService.running){
+            alert("Najpierw naciśnij STOP, żeby nie nadpisać pomiarów.");
+            return;
+        }
+        Intent open=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        open.addCategory(Intent.CATEGORY_OPENABLE);
+        open.setType("*/*"); // Many file pickers do not know .jsonl MIME.
+        startActivityForResult(open,IMPORT);
+    }
     private void exportLog(){
         String path=NanoCulService.logFilePath;
         if(path.isEmpty() || !new File(path).exists()){
@@ -238,7 +251,29 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);
-        if(request!=EXPORT || result!=RESULT_OK || data==null || data.getData()==null)return;
+        if(result!=RESULT_OK || data==null || data.getData()==null)return;
+        if(request==IMPORT) {
+            if(NanoCulService.running){
+                alert("Przed importem zatrzymaj odbiór NanoCUL.");
+                return;
+            }
+            android.net.Uri uri=data.getData();
+            alert("Odczytywanie pomiarów GPS/RSSI z logu...");
+            new Thread(()->{
+                try(InputStream stream=getContentResolver().openInputStream(uri)){
+                    SurveyStore.ImportReport report=
+                        SurveyStore.importFromJsonl(getApplicationContext(),stream);
+                    runOnUiThread(()->alert(
+                        "Przywrócono "+report.recoveredFrames+" ramek; "+
+                        report.withGps+" z GPS. Otwórz Mapę nadajników. "+
+                        "Nie importuj tego samego pliku wielokrotnie."));
+                } catch(Exception e) {
+                    runOnUiThread(()->alert("Import nieudany: "+e.getMessage()));
+                }
+            },"restore-nanocul-survey").start();
+            return;
+        }
+        if(request!=EXPORT)return;
         try(FileInputStream input=new FileInputStream(NanoCulService.logFilePath);
             OutputStream output=getContentResolver().openOutputStream(data.getData())){
             if(output==null)throw new Exception("No output stream");
