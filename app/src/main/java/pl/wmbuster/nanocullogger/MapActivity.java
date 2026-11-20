@@ -1,7 +1,11 @@
 package pl.wmbuster.nanocullogger;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.location.Location;
+import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -22,10 +26,13 @@ import org.osmdroid.views.overlay.Polygon;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Map of experimentally estimated transmitter positions, not exact meters.
- * Online OSM tiles require internet and expose requested tile regions to OSM.
- * Survey positions are stored locally; nothing is uploaded by this class. */
+/**
+ * Shows BOTH (1) measured phone GPS/RSSI reception sites and
+ * (2) hypothetical transmitter estimates. They are visibly distinct.
+ * A GPS reception marker is NEVER described as a transmitter position.
+ */
 public final class MapActivity extends Activity {
+    private static final int MAX_SITE_MARKERS=90;
     private final Handler handler=new Handler(Looper.getMainLooper());
     private MapView map;
     private TextView summary;
@@ -40,8 +47,7 @@ public final class MapActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        Configuration.getInstance().setUserAgentValue(getPackageName()+"/0.2.0");
-
+        Configuration.getInstance().setUserAgentValue(getPackageName()+"/0.3.1");
         LinearLayout root=new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         setContentView(root);
@@ -58,7 +64,7 @@ public final class MapActivity extends Activity {
         summary=new TextView(this);
         summary.setTextSize(13);
         summary.setPadding(14,8,14,8);
-        summary.setText("Mapa szacunkowa. Potrzeba min. 4 różnych pozycji GPS, odległości >= 60 m i odpowiedniej geometrii.");
+        summary.setText("Wczytywanie punktów pomiarowych i szacunków RSSI...");
         root.addView(summary);
 
         map=new MapView(this);
@@ -70,10 +76,76 @@ public final class MapActivity extends Activity {
         foot.setTextSize(12);
         foot.setGravity(Gravity.CENTER);
         foot.setPadding(10,8,10,8);
-        foot.setText("Okrąg = orientacyjna niepewność, nie granica dokładności. " +
-          "Ściany i odbicia mogą silnie zniekształcić RSSI. Podkład OSM wymaga internetu.");
+        foot.setText("Pomarańczowy = miejsce odbioru przez TELEFON. " +
+          "Niebieski + okrąg = szacunek nadajnika, NIE dokładna lokalizacja. " +
+          "Kafelki OSM wymagają internetu.");
         root.addView(foot);
         redraw();
+    }
+
+    private static double distanceMeters(GeoPoint a,GeoPoint b) {
+        double n=(a.getLatitude()-b.getLatitude())*111195;
+        double e=(a.getLongitude()-b.getLongitude())*111195*
+                 Math.cos(Math.toRadians((a.getLatitude()+b.getLatitude())/2));
+        return Math.hypot(n,e);
+    }
+
+    private GeoPoint currentPhoneLocation() {
+        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=
+              PackageManager.PERMISSION_GRANTED &&
+           checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)!=
+              PackageManager.PERMISSION_GRANTED) return null;
+        try {
+            LocationManager lm=(LocationManager)getSystemService(LOCATION_SERVICE);
+            Location best=null;
+            for(String provider:new String[]{
+                LocationManager.GPS_PROVIDER,LocationManager.NETWORK_PROVIDER}) {
+                Location l=lm.getLastKnownLocation(provider);
+                if(l!=null && l.hasAccuracy() && l.getTime()>0 &&
+                   System.currentTimeMillis()-l.getTime()<120000 &&
+                   (best==null || l.getAccuracy()<best.getAccuracy())) best=l;
+            }
+            return best==null?null:new GeoPoint(best.getLatitude(),best.getLongitude());
+        }catch(Exception ignored) {return null;}
+    }
+
+    private void addPhoneSpot(GeoPoint pt,String manufacturer,String meter,
+                              int rssi,double accuracy) {
+        Polygon dot=new Polygon();
+        dot.setPoints(Polygon.pointsAsCircle(pt,9));
+        // Orange = actual recording location, never transmitter.
+        dot.getFillPaint().setColor(Color.argb(85,239,137,42));
+        dot.getOutlinePaint().setColor(Color.rgb(190,95,21));
+        dot.getOutlinePaint().setStrokeWidth(2);
+        map.getOverlays().add(dot);
+
+        Marker marker=new Marker(map);
+        marker.setPosition(pt);
+        marker.setAnchor(Marker.ANCHOR_CENTER,Marker.ANCHOR_BOTTOM);
+        marker.setTitle("POMIAR GPS: "+manufacturer+" "+meter);
+        marker.setSnippet("Miejsce odbioru przez telefon, NIE pozycja nadajnika. "+
+            "RSSI "+rssi+" dBm; GPS ±"+Math.round(accuracy)+" m");
+        map.getOverlays().add(marker);
+    }
+
+    private void addEstimate(GeoPoint pt,JSONObject meter,JSONObject candidate) {
+        double uncertainty=candidate.optDouble("uncertainty_m",150);
+        if(!Double.isFinite(uncertainty))uncertainty=150;
+        Polygon circle=new Polygon();
+        circle.setPoints(Polygon.pointsAsCircle(pt,uncertainty));
+        circle.getFillPaint().setColor(Color.argb(25,25,110,190));
+        circle.getOutlinePaint().setColor(Color.argb(150,25,110,190));
+        circle.getOutlinePaint().setStrokeWidth(3);
+        map.getOverlays().add(circle);
+        Marker marker=new Marker(map);
+        marker.setPosition(pt);
+        marker.setAnchor(Marker.ANCHOR_CENTER,Marker.ANCHOR_BOTTOM);
+        marker.setTitle("SZACUNEK: "+meter.optString("manufacturer")+" "+meter.optString("id"));
+        marker.setSnippet("Orientacyjna lokalizacja nadajnika RSSI ±~"+
+            Math.round(uncertainty)+" m · "+
+            candidate.optInt("distinct_sites")+" punktów · "+
+            candidate.optInt("observations")+" odczytów GPS/RSSI");
+        map.getOverlays().add(marker);
     }
 
     private void redraw() {
@@ -83,53 +155,102 @@ public final class MapActivity extends Activity {
         if(lastSnapshot.equals(json))return;
         lastSnapshot=json;
         map.getOverlays().clear();
-        int all=data.length(),known=0;
+        int meters=data.length(),estimated=0,totalSamples=0,drawn=0,metersWithGps=0;
         GeoPoint first=null;
-        List<GeoPoint> points=new ArrayList<>();
-
+        List<JSONObject> meterRows=new ArrayList<>();
         JSONArray names=data.names();
         if(names!=null)for(int i=0;i<names.length();i++) {
             JSONObject meter=data.optJSONObject(names.optString(i));
-            if(meter==null)continue;
+            if(meter!=null)meterRows.add(meter);
+        }
+        // Show meters most recently heard first.
+        meterRows.sort((a,b)->Long.compare(b.optLong("last_seen"),a.optLong("last_seen")));
+        StringBuilder details=new StringBuilder();
+        int shown=0;
+        for(JSONObject meter:meterRows) {
+            String id=meter.optString("manufacturer")+" "+meter.optString("id");
+            JSONArray samples=meter.optJSONArray("samples");
+            int sampleCount=samples==null?0:samples.length();
+            totalSamples+=sampleCount;
+            if(sampleCount>0)metersWithGps++;
+
+            List<GeoPoint> displayedSites=new ArrayList<>();
+            if(samples!=null)for(int i=samples.length()-1;i>=0;i--) {
+                JSONObject p=samples.optJSONObject(i);
+                if(p==null)continue;
+                double lat=p.optDouble("lat",Double.NaN),
+                       lon=p.optDouble("lon",Double.NaN);
+                if(!Double.isFinite(lat)||!Double.isFinite(lon))continue;
+                GeoPoint gp=new GeoPoint(lat,lon);
+                if(first==null)first=gp;
+                boolean nearby=false;
+                for(GeoPoint other:displayedSites) {
+                    if(distanceMeters(gp,other)<15) {nearby=true;break;}
+                }
+                if(nearby)continue;
+                displayedSites.add(gp);
+                if(drawn<MAX_SITE_MARKERS) {
+                    addPhoneSpot(gp,meter.optString("manufacturer"),meter.optString("id"),
+                                 p.optInt("rssi",-127),p.optDouble("accuracy_m",0));
+                    drawn++;
+                }
+                // Bound processing for large surveys; each meter already keeps <=160.
+            }
+
             JSONObject candidate=meter.optJSONObject("estimate");
             if(candidate!=null) {
                 double lat=candidate.optDouble("lat",Double.NaN),
                        lon=candidate.optDouble("lon",Double.NaN);
-                if(!Double.isFinite(lat)||!Double.isFinite(lon))continue;
-                GeoPoint gp=new GeoPoint(lat,lon);
-                if(first==null)first=gp;
-                points.add(gp);
-                double uncertainty=candidate.optDouble("uncertainty_m",150);
-                if(!Double.isFinite(uncertainty))uncertainty=150;
-                Polygon circle=new Polygon();
-                circle.setPoints(Polygon.pointsAsCircle(gp,uncertainty));
-                circle.getFillPaint().setColor(Color.argb(22,25,110,190));
-                circle.getOutlinePaint().setColor(Color.argb(140,25,110,190));
-                circle.getOutlinePaint().setStrokeWidth(2);
-                map.getOverlays().add(circle);
-                Marker marker=new Marker(map);
-                marker.setPosition(gp);
-                marker.setAnchor(Marker.ANCHOR_CENTER,Marker.ANCHOR_BOTTOM);
-                marker.setTitle(meter.optString("manufacturer")+" "+
-                    meter.optString("id"));
-                marker.setSnippet("SZACUNEK RSSI, nie adres • ±~"+
-                    (int)Math.round(uncertainty)+" m • "+
-                    candidate.optInt("distinct_sites")+" lokalizacji GPS • "+
-                    candidate.optInt("observations")+" pomiarów");
-                map.getOverlays().add(marker);
-                known++;
-            } else if(first==null) {
-                // Until model is solvable, center on a recorded phone position
-                // but DO NOT show a falsely inferred transmitter pin.
-                JSONArray samples=meter.optJSONArray("samples");
-                if(samples!=null && samples.length()>0) {
-                    JSONObject s=samples.optJSONObject(samples.length()-1);
-                    if(s!=null)first=new GeoPoint(s.optDouble("lat"),s.optDouble("lon"));
+                if(Double.isFinite(lat) && Double.isFinite(lon)) {
+                    GeoPoint gp=new GeoPoint(lat,lon);
+                    if(first==null)first=gp;
+                    addEstimate(gp,meter,candidate);
+                    estimated++;
                 }
             }
+            if(shown++<5) {
+                details.append("\n").append(id)
+                       .append(" · ").append(meter.optInt("received_count",0))
+                       .append(" ram. · ").append(sampleCount).append(" GPS");
+                if(candidate==null) {
+                    if(sampleCount==0)
+                        details.append(" · ").append(meter.optString("last_gps_status",
+                                                    "brak pomiarów GPS"));
+                    else if(displayedSites.size()<4)
+                        details.append(" · potrzeba 4 różnych miejsc (>=15 m)");
+                    else
+                        details.append(" · potrzeba >=60 m i trasy z kilku stron");
+                } else details.append(" · SZACUNEK");
+            }
         }
-        summary.setText("Nadajniki: "+known+" szacunków / "+all+
-           " wykrytych liczników. Każdy poprawny telegram z GPS i RSSI aktualizuje model.");
+        if(first==null) {
+            GeoPoint phone=currentPhoneLocation();
+            if(phone!=null) {
+                first=phone;
+                Marker phoneMarker=new Marker(map);
+                phoneMarker.setPosition(phone);
+                phoneMarker.setTitle("Telefon · ostatnia pozycja GPS");
+                phoneMarker.setSnippet("To nie jest lokalizacja licznika.");
+                map.getOverlays().add(phoneMarker);
+            }
+        }
+        StringBuilder top=new StringBuilder()
+            .append("Liczniki: ").append(meters)
+            .append(" · GPS/RSSI: ").append(totalSamples)
+            .append(" · punkty na mapie: ").append(drawn)
+            .append(" · szacunki nadajników: ").append(estimated);
+        if(meters==0)
+            top.append("\nBrak zapisanej historii pomiarów. Uruchom odbiór i sprawdź GPS telefonu.");
+        else if(totalSamples==0)
+            top.append("\nŻaden z odebranych telegramów nie miał zaakceptowanego "+
+                "GPS (świeży fix, dokładność <=35 m) i RSSI.");
+        else if(estimated==0)
+            top.append("\nSą punkty pomiarowe, ale brak wiarygodnego szacunku "+
+                "(min. 4 różne miejsca / >=60 m / trasa nie po linii).");
+        top.append(details);
+        if(!NanoCulService.gpsStatus.isEmpty())
+            top.append("\nGPS telefonu: ").append(NanoCulService.gpsStatus);
+        summary.setText(top.toString());
         if(firstCenter && first!=null) {
             map.getController().setCenter(first);
             map.getController().setZoom(16.0);
