@@ -7,7 +7,41 @@ Skaner radiowy wM-Bus na telefon z Androidem. Odbiera telegramy z
 dekoduje pomiary, loguje RSSI i GPS telefonu i szacuje położenie
 nadajników z odczytów z wielu miejsc. Flipper Zero nie jest potrzebny.
 
-## Funkcje wersji 0.3.0
+## Poprawka mapy w 0.3.1
+
+**Odebrane ramki to nie szacunki pozycji nadajnika.** We wcześniejszej
+wersji mapa rysowała tylko lokalizacje nadajników obliczone przez model.
+W efekcie po 250 telegramach odebranych w jednym miejscu mogła nie
+pokazać niczego. Dodatkowo nie zapisywała danych o licznikach, jeśli
+GPS/RSSI odrzucił wszystkie pomiary.
+
+Od 0.3.1:
+- **Pomarańczowe znaczniki = pozycje TELEFONU podczas odbioru**
+  (punkty GPS, niezależnie od tego, czy da się wyliczyć pozycję licznika).
+- **Niebieskie znaczniki + kręgi = niepewne szacunki nadajników**;
+  wymagane co najmniej 4 różne punkty tego SAMEGO licznika, minimum
+  60 m rozpiętości i trasa nieomal niekolinearna.
+- W nagłówku mapy jest liczba wykrytych liczników, zapisanych
+  odczytów GPS, danych RSSI oraz powód niewyświetlania szacunku.
+  Metadane liczników zapisują się nawet wtedy, gdy nie ma GPS.
+- Miejsca odbioru zapisują się także bez RSSI, natomiast takie
+  próbki **nie są używane do lokalizowania** nadajnika.
+- Na ekranie skanowania wyświetla się przyczyna odrzucenia GPS:
+  brak aktualnej pozycji, GPS starszy niż 20 s lub dokładność gorsza
+  niż 35 m. Na Androidzie sprawdź uprawnienie aplikacji do
+  **dokładnej lokalizacji**, włącz GPS, najlepiej wyjdź na zewnątrz.
+- **Przywróć mapę z logu JSONL:** po wyeksportowaniu starej sesji
+  możesz odtworzyć pomiary przez wybór pliku w nowej aplikacji.
+  Najpierw STOP, potem import. Nie importuj tego samego pliku
+  wielokrotnie. Jeśli w starym logu wszystkie `location` mają
+  wartość `null`, nie da się odzyskać brakujących współrzędnych.
+
+**Ważne przy instalacji:** pliki APK z różnych biegów CI mogą mieć
+różne klucze debug. Przed reinstalacją wyeksportuj JSONL ze starej
+wersji. Odtworzysz z niego wszystkie dane GPS/RSSI faktycznie
+zapisane w logu; pomiarów, których w logu nie było, nie odzyskamy.
+
+## Funkcje wersji 0.3.x
 
 - **USB-OTG/CH340:** USB Serial 38400 8N1 domyślnie, wybór 57600/115200
   i T1/C1/T+C/S1 (`brt`, `brc`, `brs`, `X21`).
