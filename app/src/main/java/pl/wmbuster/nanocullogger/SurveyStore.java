@@ -78,8 +78,6 @@ public final class SurveyStore {
             String reason;
             if(gps==null || !gps.has("lat") || !gps.has("lon")) {
                 reason="Brak aktualnego GPS (fix maks. 20 s)";
-            } else if(rssi==null || rssi<-120 || rssi>-20) {
-                reason="Brak poprawnego RSSI";
             } else {
                 double acc=gps.optDouble("accuracy_m",Double.NaN);
                 double lat=gps.optDouble("lat",Double.NaN);
@@ -93,13 +91,18 @@ public final class SurveyStore {
                     reason="GPS ±"+(Double.isFinite(acc)?Math.round(acc)+" m":"?")+
                            " (wymagane <=35 m; użyj dokładnej lokalizacji)";
                 } else {
+                    // GPS-only reception is still a useful point on the map.
+                    // It must NOT be fed to the RSSI location estimator.
+                    boolean goodRssi=rssi!=null && rssi>=-120 && rssi<=-20;
                     JSONObject point=new JSONObject();
                     point.put("lat",lat);point.put("lon",lon);
                     point.put("accuracy_m",acc);
-                    point.put("rssi",rssi);point.put("timestamp",epochMs);
+                    point.put("rssi",goodRssi?rssi:JSONObject.NULL);
+                    point.put("timestamp",epochMs);
                     samples.put(point);
                     added=true;
-                    reason="Punkt GPS i RSSI zapisany";
+                    reason=goodRssi?"Punkt GPS i RSSI zapisany":
+                        "Punkt GPS zapisany; brak RSSI do wyznaczenia nadajnika";
                 }
             }
             meter.put("last_gps_status",reason);
@@ -196,7 +199,7 @@ public final class SurveyStore {
                     catch(Exception ex){when=System.currentTimeMillis();}
                     store.update(d,rssi,gps,when);
                     report.recoveredFrames++;
-                    if(gps!=null && rssi!=null &&
+                    if(gps!=null &&
                        gps.optDouble("accuracy_m",Double.NaN)<=35 &&
                        gps.optDouble("accuracy_m",Double.NaN)>0)
                         report.withGps++;
