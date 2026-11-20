@@ -7,7 +7,12 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.BufferedReader;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -137,6 +142,74 @@ public final class SurveyStore {
         }
     }
     public synchronized String latestStatus() {return lastStatus;}
+
+    public static final class ImportReport {
+        public int recoveredFrames;
+        public int withGps;
+        public int skipped;
+    }
+
+    /**
+     * Restore GPS/RSSI survey history from a previously exported session
+     * JSONL, including logs written by v0.1/v0.2/v0.3.
+     * Decoder_update/invalid frames are skipped. The file remains on disk.
+     * Should be called from a background thread with the USB service stopped.
+     * Do not import the same log twice: observations may be duplicated.
+     */
+    public static ImportReport importFromJsonl(Context context,InputStream stream)
+            throws IOException {
+        if(stream==null)throw new IOException("Brak strumienia pliku");
+        SurveyStore store=new SurveyStore(context);
+        ImportReport report=new ImportReport();
+        try(BufferedReader reader=new BufferedReader(
+                new InputStreamReader(stream,StandardCharsets.UTF_8))) {
+            String line;
+            int lineCount=0;
+            long totalChars=0;
+            while((line=reader.readLine())!=null) {
+                totalChars+=line.length();
+                if(++lineCount>20000 || totalChars>20_000_000L)
+                    throw new IOException("Log zbyt duży; limit 20 MB / 20 000 wierszy");
+                if(line.isEmpty())continue;
+                try {
+                    JSONObject event=new JSONObject(line);
+                    if(!"nanoCUL_USB".equals(event.optString("source")) ||
+                       !event.has("frame_hex") ||
+                       !event.has("manufacturer") || !event.has("id"))
+                        continue;
+                    String manufacturer=event.optString("manufacturer");
+                    String id=event.optString("id");
+                    String idHex=event.optString("id_hex");
+                    if(manufacturer.isEmpty()||id.isEmpty()||idHex.isEmpty()){
+                        report.skipped++;continue;
+                    }
+                    WmbusDecoder.Result d=new WmbusDecoder.Result(
+                        manufacturer,id,idHex,event.optString("media","Unknown"),
+                        event.optInt("version",0),event.optInt("medium_code",0),
+                        event.optInt("ci",0),event.optString("decode_status","imported"),
+                        event.optString("summary",""),new ArrayList<>());
+                    Integer rssi=event.isNull("rssi_dbm")?null:
+                        (event.has("rssi_dbm")?event.optInt("rssi_dbm",-127):null);
+                    JSONObject gps=event.optJSONObject("location");
+                    long when;
+                    try{when=Instant.parse(event.optString("timestamp_utc")).toEpochMilli();}
+                    catch(Exception ex){when=System.currentTimeMillis();}
+                    store.update(d,rssi,gps,when);
+                    report.recoveredFrames++;
+                    if(gps!=null && rssi!=null &&
+                       gps.optDouble("accuracy_m",Double.NaN)<=35 &&
+                       gps.optDouble("accuracy_m",Double.NaN)>0)
+                        report.withGps++;
+                }catch(Exception ignored) {
+                    report.skipped++;
+                }
+            }
+        }
+        // Ensure the most recent counters are written after an imported run.
+        store.persist();
+        return report;
+    }
+
     public synchronized JSONObject snapshot() {
         try {return new JSONObject(survey.toString());}
         catch(Exception e) {return new JSONObject();}
