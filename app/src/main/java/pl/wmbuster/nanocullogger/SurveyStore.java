@@ -17,8 +17,10 @@ import java.util.List;
 public final class SurveyStore {
     private final File file;
     private final JSONObject survey;
+    private long lastPersistMs=0L;
+    private String lastStatus="Brak pomiarów GPS/RSSI";
     private static JSONObject read(File file) {
-        if(file.length()<=0 || file.length()>3_000_000) return new JSONObject();
+        if(file.length()<=0 || file.length()>12_000_000) return new JSONObject();
         try(FileInputStream in=new FileInputStream(file)) {
             byte[] bytes=new byte[(int)file.length()];
             int offset=0,n;
@@ -54,6 +56,7 @@ public final class SurveyStore {
         try {
             String identity=key(d);
             JSONObject meter=survey.optJSONObject(identity);
+            boolean newMeter=meter==null;
             if(meter==null) {
                 meter=new JSONObject();
                 meter.put("id",d.id);
@@ -65,23 +68,38 @@ public final class SurveyStore {
                 survey.put(identity,meter);
             }
             JSONArray samples=meter.getJSONArray("samples");
+            meter.put("received_count",meter.optInt("received_count",0)+1);
             boolean added=false;
-            if(gps!=null && rssi!=null && gps.has("lat") && gps.has("lon")) {
+            String reason;
+            if(gps==null || !gps.has("lat") || !gps.has("lon")) {
+                reason="Brak aktualnego GPS (fix maks. 20 s)";
+            } else if(rssi==null || rssi<-120 || rssi>-20) {
+                reason="Brak poprawnego RSSI";
+            } else {
                 double acc=gps.optDouble("accuracy_m",Double.NaN);
                 double lat=gps.optDouble("lat",Double.NaN);
                 double lon=gps.optDouble("lon",Double.NaN);
-                if(Double.isFinite(acc)&&acc>0&&acc<=35&&
-                   Double.isFinite(lat)&&Double.isFinite(lon)&&
-                   lat>=-85&&lat<=85&&lon>=-180&&lon<=180&&
-                   rssi>=-120&&rssi<=-20) {
+                meter.put("last_gps_accuracy_m",
+                        Double.isFinite(acc)?acc:JSONObject.NULL);
+                if(!Double.isFinite(lat)||!Double.isFinite(lon)||
+                   lat<-85||lat>85||lon<-180||lon>180){
+                    reason="Błędne współrzędne GPS";
+                } else if(!Double.isFinite(acc)||acc<=0||acc>35) {
+                    reason="GPS ±"+(Double.isFinite(acc)?Math.round(acc)+" m":"?")+
+                           " (wymagane <=35 m; użyj dokładnej lokalizacji)";
+                } else {
                     JSONObject point=new JSONObject();
                     point.put("lat",lat);point.put("lon",lon);
                     point.put("accuracy_m",acc);
                     point.put("rssi",rssi);point.put("timestamp",epochMs);
                     samples.put(point);
                     added=true;
+                    reason="Punkt GPS i RSSI zapisany";
                 }
             }
+            meter.put("last_gps_status",reason);
+            meter.put("last_rssi_dbm",rssi==null?JSONObject.NULL:rssi);
+            lastStatus=d.manufacturer+" "+d.id+": "+reason;
             // Retain a bounded number of measurements per meter.
             while(samples.length()>160)samples.remove(0);
             List<RssiLocator.Observation> pts=new ArrayList<>(samples.length());
@@ -106,26 +124,34 @@ public final class SurveyStore {
                 meter.remove("estimate");
             }
             meter.put("last_seen",epochMs);
-            if(added)persist();
+            // Previously only GPS-accepted frames were persisted. If no GPS
+            // or coarse location was available, the map had no meters at all.
+            // Persist even zero-sample meter metadata, without fsync on each
+            // high-rate telegram.
+            if(added || newMeter || epochMs-lastPersistMs>=5000L) {
+                if(persist())lastPersistMs=epochMs;
+            }
             return pos;
         } catch(Exception ignored) {
             return null;
         }
     }
+    public synchronized String latestStatus() {return lastStatus;}
     public synchronized JSONObject snapshot() {
         try {return new JSONObject(survey.toString());}
         catch(Exception e) {return new JSONObject();}
     }
-    private void persist() {
+    private boolean persist() {
         File temp=new File(file.getParentFile(),file.getName()+".tmp");
         try(FileOutputStream stream=new FileOutputStream(temp)) {
             stream.write(survey.toString().getBytes(StandardCharsets.UTF_8));
             stream.getFD().sync();
-        } catch(Exception e){return;}
+        } catch(Exception e){return false;}
         // Atomic swap on the same filesystem.
         if(!temp.renameTo(file)) {
-            // Don't truncate a working history if the rename fails.
             temp.delete();
+            return false;
         }
+        return true;
     }
 }
