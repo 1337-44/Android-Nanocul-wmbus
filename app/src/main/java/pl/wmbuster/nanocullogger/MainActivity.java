@@ -39,6 +39,9 @@ public final class MainActivity extends Activity {
     private static final int PERMISSIONS=8;
     private static final int EXPORT=9;
     private static final int IMPORT=10;
+    private static final int EXPORT_POSITIONS=11;
+    private static final int EXPORT_SURVEY=12;
+    private static final int IMPORT_SURVEY=13;
     private final String usbPermissionAction="pl.wmbuster.nanocullogger.USB_PERMISSION";
     private final Handler handler=new Handler(Looper.getMainLooper());
     private TextView statusText,gpsText,lastText,logText,usbText;
@@ -106,6 +109,11 @@ public final class MainActivity extends Activity {
         root.addView(button("Przywróć mapę z logu JSONL",v->importLog()));
         root.addView(button("Mapa nadajników (RSSI + GPS)",v->
                 startActivity(new Intent(this,MapActivity.class))));
+        root.addView(button("Antena kierunkowa — zapisz namiary",v->
+                startActivity(new Intent(this,DirectionCaptureActivity.class))));
+        root.addView(button("Eksportuj najlepsze pozycje (CSV)",v->exportPositions()));
+        root.addView(button("Eksportuj bazę poprzednich sesji (JSON)",v->exportSurvey()));
+        root.addView(button("Przywróć bazę poprzednich sesji (JSON)",v->restoreSurvey()));
         root.addView(button("Sprawdź aktualizacje z GitHub",v->ReleaseUpdater.check(this)));
         root.addView(text("Stan rejestratora",17,true));
         statusText=text("-",15,false);root.addView(statusText);
@@ -238,6 +246,38 @@ public final class MainActivity extends Activity {
         open.setType("*/*"); // Many file pickers do not know .jsonl MIME.
         startActivityForResult(open,IMPORT);
     }
+    private void chooseSave(int request,String mime,String name) {
+        Intent save=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        save.addCategory(Intent.CATEGORY_OPENABLE);
+        save.setType(mime);
+        save.putExtra(Intent.EXTRA_TITLE,name);
+        startActivityForResult(save,request);
+    }
+    private void exportPositions(){
+        // Best-estimate table is a separate file managed after every better fix.
+        chooseSave(EXPORT_POSITIONS,"text/csv","transmitter_positions.csv");
+    }
+    private void exportSurvey(){
+        chooseSave(EXPORT_SURVEY,"application/json","nanocul_survey_backup.json");
+    }
+    private void restoreSurvey(){
+        if(NanoCulService.running) {
+            alert("Najpierw STOP; baza nie może być zmieniana podczas skanowania.");
+            return;
+        }
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Przywracanie bazy pomiarów")
+            .setMessage("Import zastąpi bieżącą historię pomiarów i namiarów. "+
+                "Najpierw wyeksportuj obecną bazę, jeśli ma zostać zachowana. "+
+                "Po imporcie algorytmy obliczą pozycje na nowo.")
+            .setNegativeButton("Anuluj",null)
+            .setPositiveButton("Wybierz plik JSON",(dialog,which)->{
+                Intent open=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                open.addCategory(Intent.CATEGORY_OPENABLE);
+                open.setType("application/json");
+                startActivityForResult(open,IMPORT_SURVEY);
+            }).show();
+    }
     private void exportLog(){
         String path=NanoCulService.logFilePath;
         if(path.isEmpty() || !new File(path).exists()){
@@ -271,6 +311,45 @@ public final class MainActivity extends Activity {
                     runOnUiThread(()->alert("Import nieudany: "+e.getMessage()));
                 }
             },"restore-nanocul-survey").start();
+            return;
+        }
+        if(request==EXPORT_POSITIONS || request==EXPORT_SURVEY) {
+            android.net.Uri uri=data.getData();
+            new Thread(()->{
+                try(OutputStream output=getContentResolver().openOutputStream(uri)){
+                    if(output==null)throw new Exception("Brak dostępu do pliku");
+                    if(request==EXPORT_SURVEY) {
+                        SurveyStore.exportSurveyBackup(getApplicationContext(),output);
+                    } else {
+                        File csv=new BestPositionStore(getApplicationContext()).csvFile();
+                        try(FileInputStream source=new FileInputStream(csv)) {
+                            byte[] buffer=new byte[8192];int bytes;
+                            while((bytes=source.read(buffer))!=-1)
+                                output.write(buffer,0,bytes);
+                        }
+                    }
+                    output.flush();
+                    runOnUiThread(()->alert("Zapisano plik do wybranego miejsca."));
+                } catch(Exception e) {
+                    runOnUiThread(()->alert("Błąd eksportu: "+e.getMessage()));
+                }
+            },"export-nanocul-data").start();
+            return;
+        }
+        if(request==IMPORT_SURVEY) {
+            if(NanoCulService.running) {
+                alert("Najpierw zatrzymaj skanowanie.");return;
+            }
+            android.net.Uri uri=data.getData();
+            new Thread(()->{
+                try(InputStream input=getContentResolver().openInputStream(uri)){
+                    int n=SurveyStore.importSurveyBackup(getApplicationContext(),input);
+                    runOnUiThread(()->alert("Przywrócono "+n+
+                        " liczników i pomiary poprzednich sesji."));
+                } catch(Exception e) {
+                    runOnUiThread(()->alert("Błąd importu bazy: "+e.getMessage()));
+                }
+            },"import-nanocul-survey").start();
             return;
         }
         if(request!=EXPORT)return;
